@@ -9,7 +9,6 @@ import copy
 from typing import Optional, Tuple, Union
 
 
-# 保留代码A中的ViT核心组件（与之前相同）
 def drop_path(x: torch.Tensor, drop_prob: float = 0., training: bool = False,
               scale_by_keep: bool = True) -> torch.Tensor:
     if drop_prob == 0. or not training:
@@ -35,10 +34,10 @@ class DropPath(nn.Module):
 class PatchEmbed(nn.Module):
     def __init__(
             self,
-            img_size: Union[int, Tuple[int, int]] = 32,  # CIFAR-10是32×32
-            patch_size: Union[int, Tuple[int, int]] = 8,  # 小图像用小patch
+            img_size: Union[int, Tuple[int, int]] = 32,
+            patch_size: Union[int, Tuple[int, int]] = 4,
             in_chans: int = 3,
-            embed_dim: int = 256,
+            embed_dim: int = 192,
             bias: bool = True,
     ):
         super().__init__()
@@ -48,7 +47,7 @@ class PatchEmbed(nn.Module):
             self.img_size[0] // self.patch_size[0],
             self.img_size[1] // self.patch_size[1]
         )
-        self.num_patches = self.grid_size[0] * self.grid_size[1]  # 32/8=4 → 4×4=16个patch
+        self.num_patches = self.grid_size[0] * self.grid_size[1]
 
         self.proj = nn.Conv2d(
             in_chans, embed_dim,
@@ -62,8 +61,8 @@ class PatchEmbed(nn.Module):
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"输入图像尺寸 {H}x{W} 与期望尺寸 {self.img_size} 不匹配"
 
-        x = self.proj(x)  # 输出形状: B, embed_dim, 4, 4
-        x = x.flatten(2).transpose(1, 2)  # 展平为 B, 16, embed_dim
+        x = self.proj(x)
+        x = x.flatten(2).transpose(1, 2)
         return x
 
 
@@ -176,14 +175,14 @@ class TransformerBlock(nn.Module):
 class VisionTransformer(nn.Module):
     def __init__(
             self,
-            img_size: Union[int, Tuple[int, int]] = 32,  # 适配CIFAR-10的32×32
-            patch_size: Union[int, Tuple[int, int]] = 8,
+            img_size: Union[int, Tuple[int, int]] = 32,
+            patch_size: Union[int, Tuple[int, int]] = 4,
             in_chans: int = 3,
-            num_classes: int = 10,  # CIFAR-10是10分类
-            embed_dim: int = 256,
-            depth: int = 10,
-            num_heads: int = 4,
-            mlp_ratio: float = 4.,
+            num_classes: int = 10,
+            embed_dim: int = 192,
+            depth: int = 6,
+            num_heads: int = 6,
+            mlp_ratio: float = 3.,
             qkv_bias: bool = True,
             drop_rate: float = 0.,
             attn_drop_rate: float = 0.,
@@ -200,13 +199,12 @@ class VisionTransformer(nn.Module):
             img_size=img_size, patch_size=patch_size,
             in_chans=in_chans, embed_dim=embed_dim
         )
-        num_patches = self.patch_embed.num_patches  # 16个patch
+        num_patches = self.patch_embed.num_patches
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))  # 分类token
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))  # +1是加上cls_token
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
 
-        # 随机深度衰减
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.Sequential(*[
             TransformerBlock(
@@ -232,10 +230,10 @@ class VisionTransformer(nn.Module):
 
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         B = x.shape[0]
-        x = self.patch_embed(x)  # B, 16, embed_dim
+        x = self.patch_embed(x)
 
-        cls_tokens = self.cls_token.expand(B, -1, -1)  # B, 1, embed_dim
-        x = torch.cat((cls_tokens, x), dim=1)  # B, 17, embed_dim (16+1)
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
 
         x = x + self.pos_embed
         x = self.pos_drop(x)
@@ -247,7 +245,7 @@ class VisionTransformer(nn.Module):
         return x
 
     def forward_head(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(x[:, 0])  # 用cls_token的输出做分类
+        return self.head(x[:, 0])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.forward_features(x)
@@ -255,41 +253,38 @@ class VisionTransformer(nn.Module):
         return x
 
 
-# 针对CIFAR-10的模型配置
 def create_cifar10_vit() -> VisionTransformer:
-    """为CIFAR-10创建适配的ViT模型"""
     return VisionTransformer(
-        img_size=32,  # CIFAR-10图像尺寸
-        patch_size=8,  # 8×8的patch（32/8=4，生成4×4=16个patch，序列长度适中）
-        embed_dim=256,  # 嵌入维度（比花卉模型稍大，因CIFAR数据更多）
-        depth=10,  # 10层Transformer（适合中等数据量）
-        num_heads=4,  # 4个注意力头（256/4=64，每个头维度合理）
-        mlp_ratio=4.,  # MLP隐藏层维度为4×embed_dim
+        img_size=32,
+        patch_size=4,
+        embed_dim=192,
+        depth=6,
+        num_heads=6,
+        mlp_ratio=3.,
         qkv_bias=True,
-        drop_rate=0.2,  # 适度dropout防止过拟合
-        attn_drop_rate=0.1,
-        drop_path_rate=0.1,  # 随机深度
-        num_classes=10  # CIFAR-10是10分类
+        drop_rate=0.3,
+        attn_drop_rate=0.2,
+        drop_path_rate=0.2,
+        num_classes=10
     )
 
 
 def main():
-    # 超参数设置（适配CIFAR-10）
-    batch_size = 64  # CIFAR图像小，可加大batch
-    num_epochs = 80  # 数据量更大，需要更多epoch
-    learning_rate = 0.001  # 稍大于花卉模型（数据更多，可更快收敛）
-    data_dir = './data/cifar10'  # 数据保存路径
+    batch_size = 128
+    num_epochs = 150
+    learning_rate = 0.0005
+    data_dir = './data/cifar10'
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
 
-    # CIFAR-10数据预处理（针对32×32图像优化）
     data_transforms = {
         'train': transforms.Compose([
-            transforms.RandomCrop(32, padding=4),  # 边缘填充后随机裁剪（增强鲁棒性）
-            transforms.RandomHorizontalFlip(),  # 随机水平翻转
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
             transforms.ToTensor(),
-            # CIFAR-10标准归一化参数
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
         ]),
         'test': transforms.Compose([
@@ -298,7 +293,6 @@ def main():
         ]),
     }
 
-    # 加载CIFAR-10数据集（无需手动整理文件夹，torchvision直接支持）
     image_datasets = {
         'train': datasets.CIFAR10(
             root=data_dir, train=True, download=True, transform=data_transforms['train']
@@ -318,22 +312,17 @@ def main():
     }
 
     dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'test']}
-    class_names = image_datasets['train'].classes  # CIFAR-10类别名（如airplane, car等）
+    class_names = image_datasets['train'].classes
     print(f"类别: {class_names}")
     print(f"训练集大小: {dataset_sizes['train']}, 测试集大小: {dataset_sizes['test']}")
 
-    # 初始化模型
     model = create_cifar10_vit()
     model = model.to(device)
 
-    # 损失函数与优化器
     criterion = nn.CrossEntropyLoss()
-    # 使用AdamW（带权重衰减的Adam，更适合Transformer）
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=5e-4)
-    # 余弦退火学习率调度器（自动调整学习率，收敛更稳定）
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-3)
     exp_lr_scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 
-    # 训练过程
     since = time.time()
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
@@ -342,61 +331,50 @@ def main():
         print(f'Epoch {epoch + 1}/{num_epochs}')
         print('-' * 10)
 
-        # 每个epoch包含训练和测试阶段
         for phase in ['train', 'test']:
             if phase == 'train':
-                model.train()  # 训练模式（启用dropout等）
+                model.train()
             else:
-                model.eval()  # 评估模式（禁用dropout等）
+                model.eval()
 
             running_loss = 0.0
             running_corrects = 0
 
-            # 迭代数据
             for inputs, labels in dataloaders[phase]:
                 inputs = inputs.to(device)
                 labels = labels.to(device)
 
-                # 清零梯度
                 optimizer.zero_grad()
 
-                # 前向传播
-                with torch.set_grad_enabled(phase == 'train'):  # 训练时计算梯度
+                with torch.set_grad_enabled(phase == 'train'):
                     outputs = model(inputs)
                     _, preds = torch.max(outputs, 1)
                     loss = criterion(outputs, labels)
 
-                    # 训练阶段反向传播+参数更新
                     if phase == 'train':
                         loss.backward()
                         optimizer.step()
 
-                # 统计损失和准确率
                 running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data)
 
-            # 学习率调度（仅训练阶段）
             if phase == 'train':
                 exp_lr_scheduler.step()
 
-            # 计算每个epoch的损失和准确率
             epoch_loss = running_loss / dataset_sizes[phase]
             epoch_acc = running_corrects.double() / dataset_sizes[phase]
             print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
 
-            # 保存测试集准确率最高的模型
             if phase == 'test' and epoch_acc > best_acc:
                 best_acc = epoch_acc
                 best_model_wts = copy.deepcopy(model.state_dict())
 
         print()
 
-    # 训练结束统计
     time_elapsed = time.time() - since
     print(f'训练完成，耗时 {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
     print(f'最佳测试集准确率: {best_acc:4f}')
 
-    # 保存最佳模型
     model.load_state_dict(best_model_wts)
     torch.save(model.state_dict(), 'cifar10_vit_best.pth')
     print("最佳模型已保存为 cifar10_vit_best.pth")
